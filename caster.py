@@ -1,69 +1,137 @@
 import os
-import re
+import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
-from typing import Optional
 
-TIME_LIMIT = 10  # seconds before the spell is dispelled
+TIME_LIMIT = 10   # seconds before the spell is stopped
 
-_FRAME = re.compile(r'(File ")([^"]*)(", line )(\d+)')
+# Python error name -> message in Filipino
+ERRORS = {
+    "SyntaxError": "Maling pagkakasulat ng spell. Suriin ang baybay at ang mga bantas, tulad ng : at mga panaklong.",
+    "IndentationError": "Mali ang pagkakapasok ng linya. Gumamit ng 4 na space.",
+    "TabError": "Mali ang pagkakapasok ng linya. Huwag paghaluin ang tab at space.",
+    "NameError": "Hindi kilala ang pangalang ito. Tiyaking nabuo mo na ito bago gamitin.",
+    "ZeroDivisionError": "Hindi maaaring hatiin sa zero.",
+    "TypeError": "Hindi magkatugma ang uri ng datos na ginamit.",
+    "ValueError": "Maling halaga ang ibinigay sa spell.",
+    "IndexError": "Wala sa hanay ang posisyong hinahanap.",
+    "KeyError": "Walang ganitong susi sa aklat.",
+}
+FALLBACK = "May hindi inaasahang sumpa na pumigil sa spell."
 
 
-@dataclass
 class CastReport:
-    stdout: str
-    stderr: str
-    problem: Optional[str]
-    timed_out: bool
-    exit_code: int
+    """What happened when the spell was run."""
+
+    def __init__(self, stdout, stderr, problem, timed_out, exit_code):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.problem = problem
+        self.timed_out = timed_out
+        self.exit_code = exit_code
 
 
-def _retarget(stderr: str, line_map: dict[int, int], real_path: str) -> str:
-    """Rewrite only the 'File ..., line N' frames that belong to our script."""
-    def swap(m: re.Match) -> str:
-        if os.path.normcase(m.group(2)) != os.path.normcase(real_path):
-            return m.group(0)
-        n = int(m.group(4))
-        return f"{m.group(1)}<mystika>{m.group(3)}{line_map.get(n, n)}"
-    return _FRAME.sub(swap, stderr)
+def read_digits(text, pos):
+    """Read the digits that start at position pos."""
+    digits = ""
+    while pos < len(text) and text[pos].isdigit():
+        digits = digits + text[pos]
+        pos += 1
+    return digits
 
 
-def cast(python_code: str, line_map: dict[int, int], time_limit: int = TIME_LIMIT) -> CastReport:
-    """Run the code. Never raises; everything is reported in CastReport."""
-    if not python_code.strip():
+def fix_line_numbers(stderr, line_map, script_path):
+    """Change Python line numbers in the error into the user's Mystika line numbers."""
+    marker = 'File "' + script_path + '", line '
+    fixed = []
+    for line in stderr.splitlines():
+        if marker in line:
+            start = line.index(marker)
+            pos = start + len(marker)
+            digits = read_digits(line, pos)
+            if digits != "":
+                number = int(digits)
+                mystika_line = line_map.get(number, number)
+                line = (line[:start] + 'File "<mystika>", line ' + str(mystika_line)
+                        + line[pos + len(digits):])
+        fixed.append(line)
+    return "\n".join(fixed)
+
+
+def magical_message(stderr):
+    """Turn a Python error into a short message in Filipino."""
+    lines = []
+    for line in stderr.strip().splitlines():
+        if line.strip() != "":
+            lines.append(line)
+    last = ""
+    if len(lines) > 0:
+        last = lines[-1]
+    kind = last.split(":", 1)[0].strip()
+
+    marker = 'File "<mystika>", line '
+    line_number = ""
+    for line in lines:
+        if marker in line:
+            digits = read_digits(line, line.index(marker) + len(marker))
+            if digits != "":
+                line_number = digits
+
+    place = ""
+    if line_number != "":
+        place = "Linya " + line_number + ": "
+    return place + ERRORS.get(kind, FALLBACK) + "\nDetalye: " + last
+
+
+def cast(python_code, line_map, time_limit=TIME_LIMIT):
+    """Run the Python code in a separate process. Never crashes; reports everything."""
+    if python_code.strip() == "":
         return CastReport("", "", None, False, 0)
 
+    workdir = tempfile.mkdtemp(prefix="mystika_")
     try:
-        with tempfile.TemporaryDirectory(prefix="mystika_", ignore_cleanup_errors=True) as workdir:
-            script = os.path.join(workdir, "spell.py")
-            with open(script, "w", encoding="utf-8") as fh:
-                fh.write(python_code)
+        script = os.path.join(workdir, "spell.py")
+        file = open(script, "w", encoding="utf-8")
+        file.write(python_code)
+        file.close()
 
-            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-            try:
-                done = subprocess.run(
-                    [sys.executable, script],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=time_limit,
-                    stdin=subprocess.DEVNULL,   # input() fails fast instead of hanging
-                    env=env,
-                    cwd=workdir,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except subprocess.TimeoutExpired:
-                return CastReport(
-                    "", "", f"The spell ran longer than {time_limit}s and was dispelled.", True, -1
-                )
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
 
-            stderr = _retarget(done.stderr or "", line_map, script).replace(script, "<mystika>")
-            problem = stderr.strip() if done.returncode != 0 and stderr.strip() else None
-            return CastReport(
-                (done.stdout or "").rstrip("\n"), stderr, problem, False, done.returncode
+        flags = 0
+        if os.name == "nt":
+            flags = subprocess.CREATE_NO_WINDOW   # no black console window on Windows
+
+        try:
+            done = subprocess.run(
+                [sys.executable, script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=time_limit,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                cwd=workdir,
+                creationflags=flags,
             )
-    except Exception as exc:  # unexpected OS-level trouble
-        return CastReport("", "", f"[Caster] Unexpected failure: {exc}", False, -1)
+        except subprocess.TimeoutExpired:
+            message = ("Lumampas sa " + str(time_limit) + " segundo ang spell kaya ito itinigil. "
+                       "Baka may ikot na walang katapusan (halimbawa: lireo ivo:) "
+                       "o napakatagal na gawain.")
+            return CastReport("", "", message, True, -1)
+
+        stderr = fix_line_numbers(done.stderr or "", line_map, script)
+        stderr = stderr.replace(script, "<mystika>")
+
+        problem = None
+        if done.returncode != 0 and stderr.strip() != "":
+            problem = magical_message(stderr)
+        return CastReport((done.stdout or "").rstrip("\n"), stderr, problem, False, done.returncode)
+
+    except Exception as error:
+        return CastReport("", "", "[Caster] Unexpected failure: " + str(error), False, -1)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

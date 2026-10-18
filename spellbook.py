@@ -1,4 +1,4 @@
-GRIMOIRE: dict[str, list[tuple[str, str, str]]] = {
+GRIMOIRE = {
     "Daloy ng Mahika": [
         ("abisala",   "if",       "Abisala! Kung totoo ang kondisyon"),
         ("eshma",     "elif",     "Isa pang kondisyon"),
@@ -10,6 +10,11 @@ GRIMOIRE: dict[str, list[tuple[str, str, str]]] = {
         ("tuloy",     "continue", "Lumaktaw sa susunod na ikot"),
         ("tahimik",   "pass",     "Walang gagawin"),
     ],
+    "Pagpili": [
+        ("adnes",     "match",    "Alamin kung ano ang halaga (switch)"),
+        ("ecsha",     "case",     "Marahil ito ang halaga (case)"),
+        ("alsha",     "case _",   "Lahat ng iba pang halaga (default)"),
+    ],
     "Katotohanan": [
         ("ivo",       "True",     "Pag-ibig, tama, totoo"),
         ("hagorn",    "False",    "Kasamaan, mali, hindi totoo"),
@@ -18,11 +23,6 @@ GRIMOIRE: dict[str, list[tuple[str, str, str]]] = {
         ("alena",     "or",       "Isa lang ay sapat na"),
         ("pirena",    "not",      "Baligtarin ang bisa"),
     ],
-    "Kapangyarihan": [
-        ("brilyante", "def",      "Lumikha ng bagong kapangyarihan (function)"),
-        ("bumalik",   "return",   "Ibalik ang resulta ng kapangyarihan"),
-        ("sanggre",   "class",    "Lahi ng mga nilalang (class)"),
-    ],
     "Pagsubok": [
         ("hamon",     "try",      "Subukan ang mapanganib na gawain"),
         ("bigo",      "except",   "Kapag nabigo ang hamon"),
@@ -30,10 +30,7 @@ GRIMOIRE: dict[str, list[tuple[str, str, str]]] = {
         ("sumpain",   "raise",    "Magpakawala ng sumpa (error)"),
     ],
     "Pagtawag": [
-        ("ipatawag",  "import",   "Tawagin ang panlabas na kapangyarihan"),
-        ("etheria",   "from",     "Mula sa anong kaharian"),
-        ("hayag",     "print",    "Ihayag ang mensahe"),
-        ("usisa",     "input",    "Magtanong sa nagbabasa"),
+        ("hayag", "print", "Ihayag ang mensahe"),
     ],
     "Anyo ng Datos": [
         ("buo",       "int",      "Buong bilang"),
@@ -47,9 +44,9 @@ GRIMOIRE: dict[str, list[tuple[str, str, str]]] = {
     ],
 }
 
-# Flat lookup used by the scanner and the weaver.
-SPELLBOOK: dict[str, str] = {
-    word: py
-    for entries in GRIMOIRE.values()
-    for word, py, _hint in entries
-}
+# Flat lookup used by the scanner and the weaver:
+# Mystika word -> Python word
+SPELLBOOK = {}
+for category in GRIMOIRE:
+    for word, python_word, hint in GRIMOIRE[category]:
+        SPELLBOOK[word] = python_word

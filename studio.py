@@ -4,23 +4,21 @@ import tkinter as tk
 from tkinter import ttk
 
 from spellbook import GRIMOIRE, SPELLBOOK
-from scanner import scan
-from weaver import weave
-from caster import cast
+from pipeline import Spell, SpellPipeline
 
 THEME = {
-    "night":   "#14101f",
-    "panel":   "#1c1630",
-    "panel2":  "#261d42",
-    "gutter":  "#171128",
-    "ink":     "#ece6ff",
-    "dim":     "#8b7fb0",
-    "gold":    "#f2c14e",
-    "rose":    "#ff7aa8",
-    "mint":    "#6ee7b7",
-    "sky":     "#7cc4ff",
-    "danger":  "#ff5d73",
-    "select":  "#43326e",
+    "night": "#0f1a14",    # deep forest (main background)
+    "panel": "#16251c",    # panels
+    "panel2": "#1f3326",   # bottom bar, active tab
+    "gutter": "#121f18",   # line numbers
+    "ink": "#e8efe0",      # main text (cream)
+    "dim": "#8fa68a",      # muted text (sage)
+    "gold": "#e0b84c",     # brilyante gold: heading, buttons, spells
+    "rose": "#d98a5f",     # terracotta: panel titles, hover
+    "mint": "#8fd694",     # leaf green: strings, success
+    "sky": "#7fb7a4",      # teal sage: numbers, Python form
+    "danger": "#e5675a",   # errors
+    "select": "#35523e",   # selection
 }
 
 MONO = ("Consolas", 12)
@@ -28,18 +26,16 @@ MONO_SM = ("Consolas", 10)
 MONO_B = ("Consolas", 11, "bold")
 
 SAMPLE = '''# Abisala! Isang maliit na spell sa Mystika
-brilyante sumpa(hanggang):
-    kabuuan = 0
-    sapiro n hathoria range(1, hanggang + 1):
-        abisala n % 2 == 0:
-            kabuuan = kabuuan + n
-        ashti:
-            tahimik
-    bumalik kabuuan
+kabuuan = 0
+sapiro n hathoria range(1, 11):
+    abisala n % 2 == 0:
+        kabuuan = kabuuan + n
+    ashti:
+        tahimik
 
 hayag("Abisala, eshma!")
-hayag("Kabuuan ng even hanggang 10:", sumpa(10))
-'''
+hayag("Kabuuan ng even hanggang 10:", kabuuan)
+   '''
 
 SPLASH_LINES = [
     "✦  Abisala, eshma!  ✦",
@@ -55,14 +51,20 @@ _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 
 class MystikaStudio:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root):
         self.root = root
         self._gutter_lines = 0
         self._refresh_job = None
-        self._hints = {w: h for es in GRIMOIRE.values() for w, _p, h in es}
+        self._hints = {}
+        for category in GRIMOIRE:
+            for word, python_word, hint in GRIMOIRE[category]:
+                self._hints[word] = hint
+        self._worker = None
+        self._spell = None
+        self._pipeline = SpellPipeline()
 
         root.withdraw()
-        root.title("✦ Mystika Studio ✦")
+        root.title("✦ Encantados Studio ✦")
         root.geometry("1280x780")
         root.minsize(980, 560)
         root.configure(bg=THEME["night"])
@@ -78,7 +80,6 @@ class MystikaStudio:
         self.editor.edit_modified(False)
         self._show_splash()
 
-    # ── styling ──────────────────────────────────────────────────────────────
     def _configure_ttk(self):
         t = THEME
         s = ttk.Style(self.root)
@@ -106,14 +107,13 @@ class MystikaStudio:
             activebackground=t["rose"], activeforeground=t["night"],
         )
 
-    # ── layout ───────────────────────────────────────────────────────────────
     def _build_header(self):
         t = THEME
         bar = tk.Frame(self.root, bg=t["night"])
         bar.pack(side=tk.TOP, fill=tk.X, pady=(8, 4))
-        tk.Label(bar, text="✦  M Y S T I K A  ✦", bg=t["night"], fg=t["gold"],
+        tk.Label(bar, text="✦  M I S T I K A  ✦", bg=t["night"], fg=t["gold"],
                  font=("Georgia", 20, "bold")).pack()
-        tk.Label(bar, text="isang wikang pang-mahika  ·  isulat ang spell, ihayag ang resulta",
+        tk.Label(bar, text="A magical language created by Encantados.",
                  bg=t["night"], fg=t["dim"], font=MONO_SM).pack()
 
     def _build_footer(self):
@@ -121,15 +121,16 @@ class MystikaStudio:
         bar = tk.Frame(self.root, bg=t["panel2"], height=44)
         bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.cast_btn = self._button(bar, "✦  Cast Spell", self.cast_spell, primary=True)
-        self.cast_btn.pack(side=tk.LEFT, padx=10, pady=6)
-        self._button(bar, "📜  Sample", self.load_sample).pack(side=tk.LEFT, padx=(0, 8), pady=6)
-        self._button(bar, "🗑  Clear", self.clear_all).pack(side=tk.LEFT, padx=(0, 8), pady=6)
-        tk.Label(bar, text="Ctrl+Enter = cast  ·  Tab = 4 spaces  ·  double-click a spell to insert",
-                 bg=t["panel2"], fg=t["dim"], font=MONO_SM).pack(side=tk.LEFT, padx=8)
-
         self.status = tk.Label(bar, text="✦ ready", bg=t["panel2"], fg=t["dim"], font=MONO_B)
         self.status.pack(side=tk.RIGHT, padx=12)
+
+        self._button(bar, "🗑 Clear", self.clear_all).pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+        self._button(bar, "📜 Load Sample", self.load_sample).pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+        self.cast_btn = self._button(bar, "✦ Run Spell", self.cast_spell, primary=True)
+        self.cast_btn.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+
+        tk.Label(bar, text="Ctrl + Enter = Run    Tab = space",
+                 bg=t["panel2"], fg=t["dim"], font=MONO_SM).pack(side=tk.LEFT, padx=10)
 
     def _build_body(self):
         t = THEME
@@ -157,7 +158,7 @@ class MystikaStudio:
         self.spell_tree.bind("<Double-1>", self._on_spell_pick)
         self.spell_tree.bind("<<TreeviewSelect>>", self._on_spell_select)
 
-        self.hint = tk.Label(frame, text="Pumili ng spell para makita ang kahulugan.",
+        self.hint = tk.Label(frame, text="Double-click a term to insert it into the editor.",
                              bg=t["panel"], fg=t["dim"], font=MONO_SM,
                              wraplength=220, justify="left", anchor="w")
         self.hint.pack(fill=tk.X, padx=10, pady=8)
@@ -222,13 +223,16 @@ class MystikaStudio:
         text.pack(fill=tk.BOTH, expand=True, padx=(6, 0), pady=6)
         return frame, text
 
-    # ── editor behaviour ─────────────────────────────────────────────────────
     def _bind_keys(self):
         self.editor.bind("<Tab>", self._on_tab)
         self.editor.bind("<Shift-Tab>", self._on_shift_tab)
         self.editor.bind("<Return>", self._on_return)
-        self.editor.bind("<Control-Return>", lambda e: (self.cast_spell(), "break")[1])
+        self.editor.bind("<Control-Return>", self._on_ctrl_enter)
         self.editor.bind("<<Modified>>", self._on_modified)
+
+    def _on_ctrl_enter(self, _event):
+        self.cast_spell()
+        return "break"
 
     def _scroll_both(self, *args):
         self.editor.yview(*args)
@@ -259,7 +263,12 @@ class MystikaStudio:
             self._gutter_lines = total
             self.gutter.config(state="normal")
             self.gutter.delete("1.0", tk.END)
-            self.gutter.insert("1.0", "\n".join(str(n) for n in range(1, total + 1)), "num")
+            numbers = ""
+            for n in range(1, total + 1):
+                if n > 1:
+                    numbers = numbers + "\n"
+                numbers = numbers + str(n)
+            self.gutter.insert("1.0", numbers, "num")
             self.gutter.config(state="disabled")
         self.gutter.yview_moveto(self.editor.yview()[0])
 
@@ -268,20 +277,20 @@ class MystikaStudio:
         for tag in ("spell", "number", "text", "note"):
             self.editor.tag_remove(tag, "1.0", tk.END)
 
-        def mark(tag, match):
-            self.editor.tag_add(tag, f"1.0+{match.start()}c", f"1.0+{match.end()}c")
-
         for m in _WORD.finditer(text):
             if m.group() in SPELLBOOK:
-                mark("spell", m)
+                self._mark("spell", m)
         for m in _NUMBER.finditer(text):
-            mark("number", m)
+            self._mark("number", m)
         for m in _TEXT.finditer(text):
-            mark("text", m)
+            self._mark("text", m)
         for m in _NOTE.finditer(text):
-            mark("note", m)
+            self._mark("note", m)
         self.editor.tag_raise("text")
         self.editor.tag_raise("note")
+
+    def _mark(self, tag, match):
+        self.editor.tag_add(tag, f"1.0+{match.start()}c", f"1.0+{match.end()}c")
 
     def _on_tab(self, _event):
         self.editor.insert(tk.INSERT, "    ")
@@ -304,7 +313,6 @@ class MystikaStudio:
         self.editor.see(tk.INSERT)
         return "break"
 
-    # ── spellbook panel ──────────────────────────────────────────────────────
     def _on_spell_select(self, _event):
         row = self.spell_tree.focus()
         values = self.spell_tree.item(row, "values") if row else ()
@@ -319,7 +327,6 @@ class MystikaStudio:
             self.editor.insert(tk.INSERT, str(values[0]) + " ")
             self.editor.focus_set()
 
-    # ── casting ──────────────────────────────────────────────────────────────
     def cast_spell(self):
         if str(self.cast_btn["state"]) == "disabled":
             return
@@ -327,43 +334,55 @@ class MystikaStudio:
         self._wipe(self.pyview[1])
         self._set_status("casting")
 
-        outcome = scan(self.editor.get("1.0", "end-1c"))
-        if outcome.problem:
-            self._write(self.result[1], "🙀 Scanner Problem", outcome.problem, bad=True)
-            self._finish(ok=False)
+        spell = self._pipeline.compile(Spell(self.editor.get("1.0", "end-1c")))
+        if spell.get_problem() is not None:
+            self._write(self.result[1], "🙀 Scanner Problem", spell.get_problem(), bad=True)
+            self._finish("error")
             return
 
-        weaving = weave(outcome.runes)
-        self._write(self.pyview[1], "🐍 Isinalin na Python", weaving.python, body_tag="py")
+       
+        if spell.is_empty():
+            self._write(self.result[1], "⚠ Walang Spell",
+                        "Walang code na maihahayag. Isulat muna ang iyong spell sa Grimoire Page, "
+                        "o pindutin ang 📜 Load Sample.", bad=True)
+            self._finish("empty")
+            return
+
+        self._write(self.pyview[1], "🐍 Isinalin na Python", spell.get_python(), body_tag="py")
 
         self.cast_btn.config(state="disabled", text="⏳ Casting…")
-        holder = {}
+        self._spell = spell
+        self._worker = threading.Thread(target=self._pipeline.cast, args=(spell,), daemon=True)
+        self._worker.start()
+        self._wait_for_worker()
 
-        def work():
-            holder["report"] = cast(weaving.python, weaving.line_map)
-
-        worker = threading.Thread(target=work, daemon=True)
-        worker.start()
-        self._wait_for(worker, holder)
-
-    def _wait_for(self, worker, holder):
-        if worker.is_alive():
-            self.root.after(60, lambda: self._wait_for(worker, holder))
+    def _wait_for_worker(self):
+        if self._worker.is_alive():
+            self.root.after(60, self._wait_for_worker)
             return
-        report = holder["report"]
-        self.cast_btn.config(state="normal", text="✦  Cast Spell")
+        report = self._spell.get_report()
+        self.cast_btn.config(state="normal", text="✦  Run Spell")
 
+        if report.timed_out:
+            self._write(self.result[1], "⏳ Napagal ang Spell", report.problem, bad=True)
+            self._finish("timeout")
+            return
         if report.stdout:
             self._write(self.result[1], "✨ Resulta", report.stdout)
         if report.problem:
             self._write(self.result[1], "🙀 Pumalya ang Spell", report.problem, bad=True)
-        self._finish(ok=report.problem is None)
+        if report.problem is None:
+            self._finish("ok")
+        else:
+            self._finish("error")
 
-    def _finish(self, ok: bool):
-        self._set_status("ok" if ok else "error")
-        self._flash(self.result[1], "#12301f" if ok else "#3a1420")
+    def _finish(self, state):
+        self._set_status(state)
+        if state == "ok":
+            self._flash(self.result[1], "#12301f")
+        else:
+            self._flash(self.result[1], "#3a1420")
 
-    # ── output helpers ───────────────────────────────────────────────────────
     def _wipe(self, widget):
         widget.config(state="normal")
         widget.delete("1.0", tk.END)
@@ -383,19 +402,20 @@ class MystikaStudio:
             "casting": ("⚡ casting…", t["gold"]),
             "ok":      ("✔ nagtagumpay ang spell", t["mint"]),
             "error":   ("✖ pumalya ang spell", t["danger"]),
+            "empty":   ("⚠ walang spell na ihahayag", t["gold"]),
+            "timeout": ("⏳ napagal ang spell", t["danger"]),
         }[kind]
         self.status.config(text=text, fg=color)
 
     def _flash(self, widget, tint, times=3, interval=110):
         colors = [tint, THEME["night"]] * times
+        self._flash_step(widget, colors, 0, interval)
 
-        def step(i=0):
-            if i < len(colors):
-                widget.config(bg=colors[i])
-                self.root.after(interval, lambda: step(i + 1))
-        step()
+    def _flash_step(self, widget, colors, i, interval):
+        if i < len(colors):
+            widget.config(bg=colors[i])
+            self.root.after(interval, self._flash_step, widget, colors, i + 1, interval)
 
-    # ── misc actions ─────────────────────────────────────────────────────────
     def load_sample(self):
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", SAMPLE)
@@ -408,7 +428,6 @@ class MystikaStudio:
         self._refresh_editor_visuals()
         self._set_status("ready")
 
-    # ── splash ───────────────────────────────────────────────────────────────
     def _show_splash(self):
         t = THEME
         self._splash = tk.Toplevel(self.root)
@@ -424,12 +443,12 @@ class MystikaStudio:
         self._splash_label = tk.Label(inner, text="", bg=t["night"], fg=t["gold"],
                                       font=("Georgia", 18, "bold"))
         self._splash_label.place(relx=0.5, rely=0.45, anchor="center")
-        tk.Label(inner, text="Mystika Studio", bg=t["night"], fg=t["dim"],
+        tk.Label(inner, text="Encantados Studio", bg=t["night"], fg=t["dim"],
                  font=MONO_SM).place(relx=0.5, rely=0.78, anchor="center")
 
         step = 450
-        for i, line in enumerate(SPLASH_LINES):
-            self.root.after(i * step, lambda s=line: self._splash_say(s))
+        for i in range(len(SPLASH_LINES)):
+            self.root.after(i * step, self._splash_say, SPLASH_LINES[i])
         self.root.after(len(SPLASH_LINES) * step + 200, self._end_splash)
 
     def _splash_say(self, text):
